@@ -1,11 +1,29 @@
 #add_context html: *HTML;
 #add_context req: *HTTP_Request;
 #add_context args: Arguments;
+#add_context request_arena: Flat_Pool;
+#add_context request_allocator: Allocator;
+
+MAX_THREADS :: 32;
 
 Arguments :: struct {
     git_base: string; @"?directory containing git repositories (default: $PWD/gits)"
     port: u16 = 8085;
 };
+
+launch_activate_socket :: (name: *u8, fds: **s32, count: *u64) -> int #foreign;
+
+launchd_socket :: () -> ok: bool, s32 {
+    fds: *s32;
+    count: u64;
+    if launch_activate_socket(temp_c_string("Listeners"), *fds, *count) != 0 {
+        return false, 0;
+    }
+
+    if count != 1 return false, 0;
+
+    return true, fds[0];
+}
 
 entered := false;
 main :: () {
@@ -21,7 +39,15 @@ main :: () {
     make_directory_if_it_does_not_exist(args.git_base, recursive=true);
 
     sock: Socket;
-    sock, ok = tcp_listen(args.port);
+    ok, sock = launchd_socket();
+    if ok {
+        if listen(sock, 16) < 0 {
+            err := get_last_socket_error();
+            log_error("failed to listen: %", err);
+        }
+        log("listening via launchd");
+    }
+    if !ok sock, ok = tcp_listen(args.port);
     if !ok exit(1);
 
     tg: Thread_Group;
