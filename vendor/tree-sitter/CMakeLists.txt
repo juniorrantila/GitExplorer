@@ -10,7 +10,11 @@ option(TREE_SITTER_FEATURE_WASM "Enable the Wasm feature" OFF)
 option(AMALGAMATED "Build using an amalgamated source" ON)
 
 if(AMALGAMATED)
-  set(TS_SOURCE_FILES "${PROJECT_SOURCE_DIR}/lib/src/lib.c")
+  set(TS_SOURCE_FILES
+      "${PROJECT_SOURCE_DIR}/lib/src/lib.c"
+      "${PROJECT_SOURCE_DIR}/languages/javascript/src/parser.c"
+      "${PROJECT_SOURCE_DIR}/languages/javascript/src/scanner.c"
+  )
 else()
   file(GLOB TS_SOURCE_FILES lib/src/*.c)
   list(REMOVE_ITEM TS_SOURCE_FILES "${PROJECT_SOURCE_DIR}/lib/src/lib.c")
@@ -21,8 +25,16 @@ add_library(tree-sitter_static STATIC ${TS_SOURCE_FILES})
 set_target_properties(tree-sitter_shared PROPERTIES OUTPUT_NAME tree-sitter)
 set_target_properties(tree-sitter_static PROPERTIES OUTPUT_NAME tree-sitter)
 
-target_include_directories(tree-sitter_shared PRIVATE lib/src lib/src/wasm PUBLIC lib/include)
-target_include_directories(tree-sitter_static PRIVATE lib/src lib/src/wasm PUBLIC lib/include)
+target_include_directories(
+    tree-sitter_shared PRIVATE lib/src lib/src/wasm
+    PUBLIC
+    lib/include
+)
+target_include_directories(
+    tree-sitter_static PRIVATE lib/src lib/src/wasm
+    PUBLIC
+    lib/include
+)
 
 if(MSVC)
   target_compile_options(tree-sitter_shared PRIVATE
