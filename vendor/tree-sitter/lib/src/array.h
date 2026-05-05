@@ -206,10 +206,11 @@ static inline void _array__erase(void* self_contents, uint32_t *size,
 /// This is not what you're looking for, see `array_reserve`.
 static inline void *_array__reserve(void *contents, uint32_t *capacity,
                                   size_t element_size, uint32_t new_capacity) {
+  uint32_t old_capacity = *capacity;
   void *new_contents = contents;
-  if (new_capacity > *capacity) {
+  if (new_capacity > old_capacity) {
     if (contents) {
-      new_contents = ts_realloc(contents, new_capacity * element_size);
+      new_contents = ts_realloc(contents, new_capacity * element_size, old_capacity * element_size);
     } else {
       new_contents = ts_malloc(new_capacity * element_size);
     }

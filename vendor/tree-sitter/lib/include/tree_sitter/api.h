@@ -1445,11 +1445,13 @@ TSWasmStore *ts_parser_take_wasm_store(TSParser *);
  *     of freeing memory that was allocated by the old allocator.
  */
 void ts_set_allocator(
-  void *(*new_malloc)(size_t),
-	void *(*new_calloc)(size_t, size_t),
-	void *(*new_realloc)(void *, size_t),
-	void (*new_free)(void *)
+  void *(*new_malloc)(void*, size_t),
+	void *(*new_calloc)(void*, size_t, size_t),
+	void *(*new_realloc)(void*, void *, size_t, size_t),
+	void (*new_free)(void*, void *)
 );
+
+void ts_set_allocator_context(void*);
 
 #ifdef __cplusplus
 }

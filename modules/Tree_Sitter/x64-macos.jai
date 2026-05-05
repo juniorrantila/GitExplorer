@@ -1313,7 +1313,9 @@ ts_parser_take_wasm_store :: (unknown0: *TSParser) -> *TSWasmStore #foreign libt
 *  2. The new allocator shares its state with the old one, so it is capable
 *     of freeing memory that was allocated by the old allocator.
 */
-ts_set_allocator :: (new_malloc: #type (unknown0: u64) -> *void #c_call, new_calloc: #type (unknown0: u64, unknown1: u64) -> *void #c_call, new_realloc: #type (unknown0: *void, unknown1: u64) -> *void #c_call, new_free: #type (unknown0: *void) -> void #c_call) -> void #foreign libtree_sitter;
+ts_set_allocator :: (new_malloc: #type (unknown0: *void, unknown1: u64) -> *void #c_call, new_calloc: #type (unknown0: *void, unknown1: u64, unknown2: u64) -> *void #c_call, new_realloc: #type (unknown0: *void, unknown1: *void, unknown2: u64, unknown3: u64) -> *void #c_call, new_free: #type (unknown0: *void, unknown1: *void) -> void #c_call) -> void #foreign libtree_sitter;
+
+ts_set_allocator_context :: (unknown0: *void) -> void #foreign libtree_sitter;
 
 #scope_file
 
