@@ -53,10 +53,16 @@ main :: () {
     tg: Thread_Group;
     tg.logging = true;
     tg.name = "http";
-    init(*tg, 32, (group: *Thread_Group, thread: *Thread, work: *void) -> Thread_Continue_Status {
+    init(*tg, MAX_THREADS, (group: *Thread_Group, thread: *Thread, work: *void) -> Thread_Continue_Status {
         client: *Client = xx work;
         defer free(client,, allocator=client.allocator);
+        defer tcp_close(*client.client);
+
         context.args = client.args;
+
+        context.request_allocator = request_arena();
+        defer reset(*context.request_arena);
+        defer reset_temporary_storage();
 
         handle_request(client,, allocator=temporary_allocator);
 
@@ -74,12 +80,10 @@ main :: () {
 
         add_work(*tg, c, logging_name=to_string(c.addr));
     }
-
 }
 
 handle_request :: (c: *Client) {
     client: = c.client;
-    defer tcp_close(*client);
     client_addr := c.addr;
     random_seed(cast,force(u64)c); // FIXME
 
@@ -87,10 +91,10 @@ handle_request :: (c: *Client) {
     if !ok return;
     context.req = *req;
 
-    html: HTML;
+    html := New(HTML);
     html.client = client;
-    html.indent_sequence = " ";
-    context.html = *html;
+    // html.indent_sequence = " ";
+    context.html = html;
 
     page := parse_page(req.path, req.query);
     context.page = *page;
@@ -141,6 +145,7 @@ handle_request :: (c: *Client) {
                 begin_response(.OK);
                 response_header("Content-Type", "image/png");
                 response_header("Cache-Control", "max-age=3600");
+                response_header("Content-Length", tprint("%", content.count));
                 end_headers();
                 write(content);
                 end_response();
@@ -156,9 +161,11 @@ handle_request :: (c: *Client) {
                     if is_binary(content) {
                         response_header("Content-Type", "application/octet-stream");
                         response_header("Cache-Control", "max-age=3600");
+                        response_header("Content-Length", tprint("%", content.count));
                     } else {
                         response_header("Content-Type", "text/plain");
                         response_header("Cache-Control", "max-age=3600");
+                        response_header("Content-Length", tprint("%", content.count));
                     }
                     end_headers();
                     write(content);
@@ -458,7 +465,7 @@ user_repos :: (user: string) {
             if !file_exists(path_join(file, ".git")) continue;
             if q != "" && !contains_nocase(file, q) continue;
 
-            desc := read_entire_file(path_join(file, ".git", "description"));
+            _, desc := read_repo_file(user, path_filename(file), .[".git", "description"]);
             if desc == "Unnamed repository; edit this file 'description' to name the repository.\n" {
                 desc = "No description";
             }
@@ -574,7 +581,7 @@ repo_page :: (user: string, repo: string, file: []string) {
             }
         }
     } else {
-        file := read_entire_file(path);
+        _, file := read_repo_file(user, repo, file);
 
         pre(class="file-content");
         defer end();
@@ -592,28 +599,20 @@ repo_page :: (user: string, repo: string, file: []string) {
         "README",
     ];
 
-    m := get_temporary_storage_mark();
     for basename: README_FILE_NAMES {
-        defer set_temporary_storage_mark(m);
+        auto_release_temp();
         defer cmark_arena_reset();
-        arena := cmark_get_arena_mem_allocator();
 
-        ts_set_allocator(
-            (size: u64) -> *void #c_call { return cmark_get_arena_mem_allocator().calloc(1, size); },
-            arena.calloc,
-            arena.realloc,
-            arena.free,
-        );
-        tree_sitter := ts_parser_new();
+        readme_path: [..]string;
+        array_add(*readme_path, ..file);
+        array_add(*readme_path, basename);
 
-        readme := path_join(path, basename);
-        if !file_exists(readme) continue;
-
-        content, ok := read_entire_file(readme);
+        ok, content := read_repo_file(user, repo, readme_path);
         if !ok continue;
 
-        options: s32 = CMARK_OPT_SMART|CMARK_OPT_GITHUB_PRE_LANG|CMARK_OPT_FOOTNOTES;
-        parser := cmark_parser_new_with_mem(options, arena);
+        options: s32 = CMARK_OPT_SMART|CMARK_OPT_GITHUB_PRE_LANG|CMARK_OPT_FOOTNOTES|CMARK_OPT_UNSAFE;
+        cmark_arena := cmark_get_arena_mem_allocator();
+        parser := cmark_parser_new_with_mem(options, cmark_arena);
         cmark_parser_feed(parser, xx content.data, xx content.count);
         document := cmark_parser_finish(parser);
 
@@ -631,12 +630,38 @@ repo_page :: (user: string, repo: string, file: []string) {
 
             // It is a relative url
             new_url := Page.make_repo(user, repo, file=split(url, "/"));
-            data := arena.calloc(1, xx (new_url.count + 2));
+            data := cmark_arena.calloc(1, xx (new_url.count + 2));
             memcpy(data, new_url.data, new_url.count);
             cmark_node_set_url(node, data);
         }
 
-        output := to_string(cmark_render_html(document, options, null));
+        // Add syntax highlighting to code blocks
+        iter = cmark_iter_new(document);
+        while true {
+            auto_release_temp();
+
+            ev_type := cmark_iter_next(iter);
+            if ev_type == .DONE break;
+
+            node := cmark_iter_get_node(iter);
+            lang := to_string(cmark_node_get_fence_info(node));
+            if !lang continue;
+            parser := get_language_parser(lang);
+            log("parser: % -> %", lang, parser);
+            if !parser continue;
+
+            ts_set_allocator_context(*context);
+            ts_set_allocator(ts_malloc, ts_calloc, ts_realloc, ts_free);
+
+            content := to_string(cmark_node_get_literal(node));
+            new_content := highlight(content, parser);
+
+            cmark_node_set_type(node, .HTML_BLOCK); 
+            cmark_node_set_literal(node, to_c_string(tprint("<code><pre lang=\"%\">%</pre></code>", lang, new_content),, allocator=CMARK_ALLOCATOR));
+        }
+
+        output := to_string(cmark_render_html(document, options|CMARK_OPT_UNSAFE, null));
+        log("output: %", output);
 
         div(class="readme");
         defer end();
@@ -917,12 +942,12 @@ HTML_Tag :: struct {
 HTML :: struct {
     client: Socket;
     head: s64;
-    buffer: [1024]u8;
-
     indent_sequence: string;
     indent: s64;
     current_id: u64;
     current_tag: *HTML_Tag;
+
+    buffer: [14 * 1024]u8;
 }
 
 tag_id :: () -> u64 {
@@ -935,16 +960,16 @@ tag_id :: () -> u64 {
 flush :: () {
     html := context.html;
 
-    rv := send(html.client, html.buffer.data, xx html.head, 0);
-    if rv < 0 {
-        err := get_last_socket_error();
-        log_error("could not send data: %", err);
-    }
+    s: string;
+    s.data = html.buffer.data;
+    s.count = html.head;
+    write_no_buffer(s);
     html.head = 0;
 }
 
 write_no_buffer :: (data: string) {
     html := context.html;
+    if data.count == 0 return;
 
     rv := send(html.client, data.data, xx data.count, 0);
     if rv < 0 {
@@ -966,6 +991,25 @@ write :: (data: string) {
     html.head += data.count;
 }
 
+textf :: (format_string: string, args: ..Any, escape := true) -> string {
+    html := context.html;
+    sb: String_Builder;
+    sb.allocator = temp;
+
+    data := tprint(format_string, args=..args);
+
+    if escape {
+        data = replace(data, "&", "&amp;");
+        data = replace(data, "<", "&lt;");
+        data = replace(data, ">", "&gt;");
+        data = replace(data, "\"", "&quot;");
+        data = replace(data, "'", "&#39;");
+    }
+    append(*sb, data);
+
+    return builder_to_string(*sb);
+}
+
 add_indent :: indent;
 text :: (format_string: string, args: ..Any, escape := true, indent := true) {
     html := context.html;
@@ -984,15 +1028,17 @@ text :: (format_string: string, args: ..Any, escape := true, indent := true) {
     }
     if indent write(i);
     write(data);
-    if indent write("\n");
+    if indent && html.indent_sequence != "" write("\n");
 } @PrintLike
 
 begin_response :: (code: Response_Code) {
     write(tprint("HTTP/1.1 %\r\n", to_string(code)));
 
     response_header("Server", "jai");
-    now := calendar_to_iso_string(to_calendar(current_time_monotonic()));
-    response_header("Date", now);
+    response_header("Connection", "close");
+    // now := calendar_to_iso_string(to_calendar(current_time_monotonic()));
+    // response_header("Date", now);
+    // response_header("Transfer-Encoding", "chunked");
 }
 
 response_header :: (key: string, value: string) {
@@ -1015,7 +1061,7 @@ begin :: (tag: string, attr := false, class := "", title := "", view := "", inde
         write("<!doctype html>\r\n");
     }
 
-    data := New(HTML_Tag);
+    data := New(HTML_Tag,, allocator=request_arena());
     data.tag = tag;
     data.previous = html.current_tag;
     html.current_id += 1;
@@ -1251,7 +1297,14 @@ css :: (source: string, external := false, media := "") {
     begin("style", attr=true);
     attr("media", media);
     end_attrs();
-    text("%", source, escape=false);
+    s := source;
+    if context.html.indent_sequence == "" s = replace(s, "\n", "");
+    old_s := "";
+    while old_s != s {
+        old_s = s;
+        if context.html.indent_sequence == "" s = replace(old_s, "  ", " ");
+    }
+    text("%", s, escape=false);
     end();
 }
 
@@ -1359,12 +1412,24 @@ repo_dir :: (user: string, repo: string) -> string {
     return path_join(user_dir(user), repo);
 }
 
+#add_context repo_files: Table(string, string);
 read_repo_file :: (user: string, repo: string, file: []string) -> ok: bool, string {
     dir := repo_dir(user, repo);
-
     path := path_join(..file);
     path = path_join(dir, path);
-    content, ok := read_entire_file(path);
+
+    ok, content := table_find(*context.repo_files, path);
+    if ok return true, content;
+
+    if !file_exists(path) return false, "";
+
+    content, ok = read_entire_file(path,, allocator = request_arena());
+    if ok {
+        context.repo_files.allocator = request_arena();
+        path = copy_string(path,, allocator=request_arena());
+        table_set(*context.repo_files, path, content);
+    }
+
     return ok, content;
 }
 
@@ -1375,10 +1440,219 @@ is_binary :: (data: string) -> bool {
     return false;
 }
 
+request_arena :: () -> Allocator {
+    return .{
+        proc = flat_pool_allocator_proc,
+        data = *context.request_arena,
+    };
+}
+
+ts_malloc :: (ctx: *void, size: u64) -> *void #c_call {
+    con: *#Context = xx ctx;
+    push_context con {
+        return alloc(xx size);
+    }
+}
+
+ts_calloc :: (ctx: *void, count: u64, size: u64) -> *void #c_call {
+    con: *#Context = xx ctx;
+    push_context con {
+        data := alloc(xx (count * size));
+        if !data return null;
+        memset(data, 0, xx (count * size));
+        return data;
+    }
+}
+
+ts_realloc :: (ctx: *void, ptr: *void, new_size: u64, old_size: u64) -> *void #c_call {
+    if !ptr return ts_malloc(ctx, new_size);
+
+    con: *#Context = xx ctx;
+    push_context con {
+        return realloc(ptr, xx new_size, xx old_size);
+    }
+}
+
+ts_free :: (ctx: *void, ptr: *void) #c_call {
+    if !ptr return;
+
+    con: *#Context = xx ctx;
+    push_context con {
+        free(ptr);
+    }
+}
+
+get_language_parser :: (name: string) -> *TSLanguage {
+    if name == {
+    case "js"; return tree_sitter_javascript();
+    }
+    return null;
+}
+
+CMARK_ALLOCATOR :: Allocator.{
+    data = null,
+    proc = (mode: Allocator_Mode, size: s64, old_size: s64, old_memory: *void, allocator_data: *void) -> *void {
+        if mode == {
+        case .ALLOCATE;
+            data := cmark_get_arena_mem_allocator().calloc(1, xx size);
+            assert(data != null, "could not allocate memory");
+            return data;
+        case .RESIZE;
+            data := cmark_get_arena_mem_allocator().realloc(old_memory, xx size);
+            assert(data != null, "could not reallocate memory");
+            return data;
+        case .FREE;
+            cmark_get_arena_mem_allocator().free(old_memory);
+            #through;
+        case; return null;
+        }
+    }
+};
+
+TreeNode :: struct {
+    node: TSNode;
+    kind: enum u8 {
+        BEGIN;
+        END;
+    };
+}
+
+tree_nodes :: (node: TSNode) -> []TreeNode {
+    result: [..]TreeNode;
+    tree_nodes(node, *result);
+    return result;
+}
+
+tree_nodes :: (node: TSNode, result: *[..]TreeNode) {
+    if ts_node_is_null(node) return;
+
+    array_add(result, TreeNode.{
+        node = node,
+        kind = .BEGIN,
+    });
+    defer array_add(result, TreeNode.{
+        node = node,
+        kind = .END,
+    });
+
+    count := ts_node_child_count(node);
+    for 0..count {
+        child := ts_node_child(node, it);
+        #this(child, result);
+    }
+}
+
+Tag :: enum {
+    DIV;
+    TEXT;
+};
+
+highlight :: (source: string, language: *TSLanguage) -> string {
+    ts := ts_parser_new();
+    if !ts return "";
+
+    if !ts_parser_set_language(ts, language) return "";
+    tree := ts_parser_parse_string(ts, null, source.data, xx source.count);
+    node := ts_tree_root_node(tree);
+    if ts_node_is_null(node) return "";
+
+    tag_stack: [..]string;
+
+    nodes := tree_nodes(node);
+
+    last_end := 0;
+    sb: String_Builder;
+    for nodes {
+        node := it.node;
+        kind := it.kind;
+        if #complete kind == {
+        case .BEGIN;
+            tag := escape_attr(to_string(ts_node_type(node)));
+            array_add(*tag_stack, tag);
+
+            if ts_node_child_count(node) == 0 {
+                start := ts_node_start_byte(node);
+                end := ts_node_end_byte(node);
+
+                append(*sb, slice(source, last_end, start - last_end));
+                content := slice(source, start, end - start);
+                content = textf("%", content);
+                if is_scream_case(content) {
+                    print_to_builder(*sb, "<code data-text=\"%\" class=\"scream %\">", content, tag);
+                } else if is_capitalized(content) {
+                    print_to_builder(*sb, "<code data-text=\"%\" class=\"capital %\">", content, tag);
+                } else {
+                    print_to_builder(*sb, "<code data-text=\"%\" class=\"%\">", content, tag);
+                }
+                append(*sb, content);
+            } else {
+                print_to_builder(*sb, "<code class=\"%\">", tag);
+            }
+        case .END;
+            pop(*tag_stack);
+            if ts_node_child_count(node) == 0 {
+                print_to_builder(*sb, "</code>");
+            } else {
+                print_to_builder(*sb, "</code>");
+            }
+            end := ts_node_end_byte(node);
+            last_end = end;
+
+            continue;
+        }
+    }
+    append(*sb, textf("%", slice(source, last_end, source.count - last_end)));
+
+    return builder_to_string(*sb);
+}
+
+escape_attr :: (attr: string) -> string {
+    result := attr;
+    result = replace(result, "&", "&amp;");
+    result = replace(result, "<", "&lt;");
+    result = replace(result, ">", "&gt;");
+    result = replace(result, "\"", "&quot;");
+    result = replace(result, "'", "&#39;");
+    return result;
+}
+
+is_scream_case :: (s: string) -> bool {
+    for s {
+        // FIXME: Add support for unicode.
+        if it >= "A" && it <= "Z" continue;
+        if it == "_" continue;
+        if it >= "0" && it <= "9" continue;
+        return false;
+    }
+    return true;
+}
+
+is_capitalized :: (s: string) -> bool {
+    if s.count <= 0 return false;
+    // FIXME: Add support for unicode.
+    return s[0] >= "A" && s[0] <= "Z";
+}
+
+#if CPU == .ARM64 {
+    #run {
+        js := tree_sitter_javascript();
+        ts := ts_parser_new();
+        ts_parser_set_language(ts, js);
+        source := "  hello.    log(\"Hello, World!\");\nfoobar.world();\n";
+        tree := ts_parser_parse_string(ts, null, source.data, xx source.count);
+        node := ts_tree_root_node(tree);
+
+        result := highlight(source, js);
+        // print("%", replace(replace(result, "\"", "\\\""), "\n", "\\n"));
+
+        expected := "<code class=\"program\"><code class=\"expression_statement\"><code class=\"call_expression\"><code class=\"member_expression\">  <code data-text=\"hello\" class=\"identifier\">hello</code><code data-text=\".\" class=\".\">.</code>    <code data-text=\"log\" class=\"property_identifier\">log</code></code><code class=\"arguments\"><code data-text=\"(\" class=\"(\">(</code><code class=\"string\"><code data-text=\"&quot;\" class=\"&quot;\">&quot;</code><code data-text=\"Hello, World!\" class=\"capital string_fragment\">Hello, World!</code><code data-text=\"&quot;\" class=\"&quot;\">&quot;</code></code><code data-text=\")\" class=\")\">)</code></code></code><code data-text=\";\" class=\";\">;</code></code><code class=\"expression_statement\"><code class=\"call_expression\"><code class=\"member_expression\">\n<code data-text=\"foobar\" class=\"identifier\">foobar</code><code data-text=\".\" class=\".\">.</code><code data-text=\"world\" class=\"property_identifier\">world</code></code><code class=\"arguments\"><code data-text=\"(\" class=\"(\">(</code><code data-text=\")\" class=\")\">)</code></code></code><code data-text=\";\" class=\";\">;</code></code></code>";
+        assert(result == expected, "expected '%' found '%'", replace(source, "\n", "\\n"), replace(source, "\n", "\\n"));
+    }
+}
+
 #import "Basic";
 #import "Socket";
 #import "Net";
-#import "HTML";
 #import "String";
 #import "Base64";
 #import "File";
@@ -1393,3 +1667,4 @@ is_binary :: (data: string) -> bool {
 #import "Random";
 #import "CMark";
 #import "Tree_Sitter";
+#import "Flat_Pool";

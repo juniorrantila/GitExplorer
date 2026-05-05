@@ -488,9 +488,13 @@ code > pre {
     color: var(--purple-dim);
   }
 
-  .string > * {
+  .string_fragment {
     color: var(--green-dim);
     font-weight: 600 !important;
+  }
+
+  .string {
+    color: var(--green-dim);
   }
 
   .identifier {
@@ -562,6 +566,11 @@ code > pre {
   }
 
   &[lang=js] {
+    .identifier.capital {
+      color: var(--yellow);
+      font-weight: 600;
+    }
+
     .identifier[data-text="Infinity"],
     .identifier[data-text="NaN"] {
       color: var(--purple);

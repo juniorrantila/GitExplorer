@@ -12,8 +12,8 @@ option(AMALGAMATED "Build using an amalgamated source" ON)
 if(AMALGAMATED)
   set(TS_SOURCE_FILES
       "${PROJECT_SOURCE_DIR}/lib/src/lib.c"
-      "${PROJECT_SOURCE_DIR}/languages/javascript/src/parser.c"
-      "${PROJECT_SOURCE_DIR}/languages/javascript/src/scanner.c"
+      "${PROJECT_SOURCE_DIR}/languages/javascript/parser.c"
+      "${PROJECT_SOURCE_DIR}/languages/javascript/scanner.c"
   )
 else()
   file(GLOB TS_SOURCE_FILES lib/src/*.c)

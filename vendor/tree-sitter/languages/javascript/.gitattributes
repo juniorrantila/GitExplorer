@@ -1,0 +1,6 @@
+* text=auto eol=lf
+
+# Generated source files
+parser.c linguist-generated
+parser.h linguist-generated
+scanner.c linguist-generated
