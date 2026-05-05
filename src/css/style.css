@@ -474,3 +474,97 @@ ul > *+* {
     }
   }
 }
+
+code > pre {
+  font-family: ui-monospace, monospace;
+  padding: 1em;
+
+  .comment {
+    color: var(--gray);
+    font-weight: 600;
+  }
+
+  .number {
+    color: var(--purple-dim);
+  }
+
+  .string > * {
+    color: var(--green-dim);
+    font-weight: 600 !important;
+  }
+
+  .identifier {
+    color: var(--fg);
+  }
+
+  [class=","] {
+    color: var(--fg);
+  }
+
+  .statement_block {
+    color: var(--fg);
+  }
+
+  .call_expression {
+    > .identifier {
+      color: var(--green);
+    }
+
+    > .member_expression > .property_identifier {
+      color: var(--green);
+    }
+  }
+
+  .arrow_function {
+    color: var(--yellow);
+  }
+
+  .function_declaration > .identifier {
+    color: var(--green);
+  }
+
+  /* keywords */
+
+  /* declaration-ish */
+  .import,
+  .export,
+  .from,
+  .class,
+  .function {
+    color: var(--aqua-dim);
+  }
+
+  /* variable declaration */
+  .const,
+  .let,
+  .var {
+    color: var(--orange);
+  }
+
+  /* control flow */
+  .if,
+  .else,
+  .switch,
+  .break,
+  .throw,
+  .catch,
+  .new,
+  .return {
+    color: var(--red);
+  }
+
+  .true,
+  .false,
+  .undefined,
+  .scream,
+  .null {
+    color: var(--purple);
+  }
+
+  &[lang=js] {
+    .identifier[data-text="Infinity"],
+    .identifier[data-text="NaN"] {
+      color: var(--purple);
+    }
+  }
+}
